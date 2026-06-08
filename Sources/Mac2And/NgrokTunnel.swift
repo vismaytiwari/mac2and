@@ -21,6 +21,7 @@ final class NgrokTunnel: @unchecked Sendable {
   private let config: AppConfig
   private var process: Process?
   private var outputPipe: Pipe?
+  private var discoveryWorkItem: DispatchWorkItem?
 
   init(config: AppConfig) throws {
     self.config = config
@@ -58,6 +59,10 @@ final class NgrokTunnel: @unchecked Sendable {
 
     let process = Process()
     process.executableURL = URL(fileURLWithPath: binary)
+    process.environment = [
+      "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+      "HOME": NSHomeDirectory(),
+    ]
     var args = [
       "http",
       "--log=stdout",
@@ -100,12 +105,15 @@ final class NgrokTunnel: @unchecked Sendable {
     do {
       try process.run()
       self.process = process
+      discoverURLFromLocalAPI(onURL: onURL)
     } catch {
       throw TunnelError.launchFailed(error.localizedDescription)
     }
   }
 
   func stop() {
+    discoveryWorkItem?.cancel()
+    discoveryWorkItem = nil
     outputPipe?.fileHandleForReading.readabilityHandler = nil
     process?.terminate()
     process = nil
@@ -125,6 +133,44 @@ final class NgrokTunnel: @unchecked Sendable {
     }
 
     return nil
+  }
+
+  private func discoverURLFromLocalAPI(onURL: @escaping @Sendable (String) -> Void) {
+    let work = DispatchWorkItem {
+      for _ in 0..<30 {
+        if let url = Self.fetchTunnelURLFromLocalAPI() {
+          DispatchQueue.main.async {
+            onURL(url)
+          }
+          return
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+      }
+    }
+
+    discoveryWorkItem = work
+    DispatchQueue.global(qos: .utility).async(execute: work)
+  }
+
+  static func fetchTunnelURLFromLocalAPI() -> String? {
+    guard let url = URL(string: "http://127.0.0.1:4040/api/tunnels") else {
+      return nil
+    }
+
+    guard let data = try? Data(contentsOf: url) else {
+      return nil
+    }
+
+    guard
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let tunnels = object["tunnels"] as? [[String: Any]]
+    else {
+      return nil
+    }
+
+    return tunnels.compactMap { tunnel in
+      tunnel["public_url"] as? String
+    }.first { $0.hasPrefix("https://") }
   }
 
   private static func extractURL(from line: String) -> String? {

@@ -10,6 +10,7 @@ enum SelfTest {
       let decrypted = try CryptoBox.decrypt(payload, password: "secret")
       precondition(decrypted == "hello from swift", "crypto round trip failed")
       try runEnvDiscoveryTest()
+      try runNgrokAPIParsingTest()
 
       do {
         _ = try CryptoBox.decrypt(payload, password: "wrong")
@@ -75,6 +76,22 @@ enum SelfTest {
     )
 
     precondition(resolved == root.appendingPathComponent(".env").path, "bundle-relative .env discovery failed")
+  }
+
+  private static func runNgrokAPIParsingTest() throws {
+    let sample = """
+    {"tunnels":[{"name":"command_line","public_url":"https://example.ngrok-free.app","proto":"https","config":{"addr":"http://127.0.0.1:54321"}}]}
+    """
+    let temp = FileManager.default.temporaryDirectory
+      .appendingPathComponent("mac2and-ngrok-selftest-\(UUID().uuidString).json")
+    try sample.write(to: temp, atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: temp) }
+
+    let data = try Data(contentsOf: temp)
+    let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    let tunnels = object?["tunnels"] as? [[String: Any]]
+    let url = tunnels?.compactMap { $0["public_url"] as? String }.first { $0.hasPrefix("https://") }
+    precondition(url == "https://example.ngrok-free.app", "ngrok API parsing failed")
   }
 
   private static func curl(url: String, bearerToken: String) throws -> (Data, Int) {
