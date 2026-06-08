@@ -1,0 +1,18 @@
+.DS_Store
+.build/
+dist/
+DerivedData/
+*.xcuserdata/
+
+# Local editor/cache state
+.idea/
+.mypy_cache/
+
+# Private runtime configuration
+.env
+.env.*
+!.env.example
+mac2and-config.json
+
+# Ignored Electron backup created during the Swift migration
+_electron_backup_*/
