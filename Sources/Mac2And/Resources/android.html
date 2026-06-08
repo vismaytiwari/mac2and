@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Mac Clipboard" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <link rel="icon" href="/icon-192.png" />
+  <title>Mac Clipboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0f172a;
+      --surface: #1e293b;
+      --card:    #0f1f36;
+      --border:  rgba(99,102,241,.18);
+      --indigo:  #6366f1;
+      --violet:  #8b5cf6;
+      --green:   #4ade80;
+      --red:     #f87171;
+      --amber:   #fbbf24;
+      --text:    #f1f5f9;
+      --muted:   #64748b;
+      --sub:     #94a3b8;
+      --radius:  16px;
+      --font:    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100dvh;
+      padding: env(safe-area-inset-top, 16px) 0 env(safe-area-inset-bottom, 24px);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Password screen ── */
+    #lock-screen {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; min-height: 90dvh; padding: 24px;
+    }
+    .lock-logo {
+      width: 72px; height: 72px;
+      background: linear-gradient(135deg, var(--indigo), var(--violet));
+      border-radius: 22px; display: flex; align-items: center;
+      justify-content: center; font-size: 36px; margin-bottom: 20px;
+      box-shadow: 0 8px 32px rgba(99,102,241,.35);
+    }
+    .lock-title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+    .lock-sub   { font-size: 13px; color: var(--sub); margin-bottom: 32px; text-align: center; max-width: 260px; line-height: 1.5; }
+    .pw-field {
+      width: 100%; max-width: 320px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+      font-size: 16px; color: var(--text); font-family: var(--font);
+      outline: none; letter-spacing: 1px; text-align: center;
+      transition: border-color .2s;
+    }
+    .pw-field::placeholder { letter-spacing: 0; color: var(--muted); }
+    .pw-field:focus { border-color: rgba(99,102,241,.5); }
+    .pw-error { font-size: 12px; color: var(--red); margin-top: 8px; height: 16px; text-align: center; }
+    .btn-connect {
+      width: 100%; max-width: 320px; margin-top: 16px;
+      background: linear-gradient(135deg, var(--indigo), var(--violet));
+      color: #fff; border: none; border-radius: 12px; padding: 14px;
+      font-size: 15px; font-weight: 600; font-family: var(--font);
+      cursor: pointer; box-shadow: 0 4px 20px rgba(99,102,241,.3);
+      transition: opacity .15s, transform .1s;
+    }
+    .btn-connect:active { transform: scale(.97); opacity: .88; }
+    .btn-connect:disabled { opacity: .38; cursor: not-allowed; transform: none !important; }
+
+    /* ── Layout ── */
+    #main { display: none; }
+
+    .sticky-header {
+      position: sticky; top: 0; z-index: 10;
+      background: var(--bg); padding: 14px 16px 10px;
+      border-bottom: 1px solid rgba(255,255,255,.04);
+    }
+    .top-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .top-left { display: flex; align-items: center; gap: 10px; }
+    .logo {
+      width: 34px; height: 34px;
+      background: linear-gradient(135deg, var(--indigo), var(--violet));
+      border-radius: 10px; display: flex; align-items: center;
+      justify-content: center; font-size: 17px;
+    }
+    .app-name { font-size: 17px; font-weight: 700; }
+    .enc-badge {
+      font-size: 10px; font-weight: 600; letter-spacing: .5px;
+      padding: 3px 8px; border-radius: 20px;
+      background: rgba(74,222,128,.1); color: var(--green);
+      border: 1px solid rgba(74,222,128,.2);
+    }
+    .btn-install {
+      display: none;
+      font-size: 11px; font-weight: 600;
+      padding: 4px 10px; border-radius: 20px;
+      background: rgba(99,102,241,.15); color: var(--indigo);
+      border: 1px solid rgba(99,102,241,.3);
+      cursor: pointer; font-family: var(--font);
+      transition: background .15s;
+    }
+    .btn-install.visible { display: block; }
+    .btn-install:active { background: rgba(99,102,241,.28); }
+
+    /* ── Status pill ── */
+    .status-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 12px; border-radius: 30px;
+      background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
+      font-size: 12px; color: var(--sub); width: fit-content;
+    }
+    .status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--muted); flex-shrink: 0; transition: background .3s;
+    }
+    .status-dot.ok   { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.err  { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+    .status-dot.warn { background: var(--amber);  box-shadow: 0 0 6px var(--amber); }
+
+    /* ── Stats bar ── */
+    #stats-bar {
+      font-size: 10.5px; color: var(--muted);
+      padding: 5px 12px 2px;
+      letter-spacing: .3px;
+      min-height: 18px;
+    }
+
+    /* ── Search bar ── */
+    .search-wrap {
+      padding: 4px 10px 6px;
+    }
+    .search-inner {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 7px 11px;
+      transition: border-color .2s;
+    }
+    .search-inner:focus-within { border-color: rgba(99,102,241,.4); }
+    .search-icon { font-size: 13px; color: var(--muted); flex-shrink: 0; }
+    .search-input {
+      flex: 1; background: none; border: none; outline: none;
+      font-size: 13px; color: var(--text); font-family: var(--font);
+    }
+    .search-input::placeholder { color: var(--muted); }
+    .search-clear {
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 15px; padding: 0; line-height: 1;
+      display: none;
+    }
+    .search-clear.visible { display: block; }
+
+    /* ── Section labels ── */
+    .section-label {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 1.2px; color: var(--muted);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 16px 8px;
+    }
+    .section-label .right { font-size: 10px; color: var(--muted); letter-spacing: 0; text-transform: none; font-weight: 500; }
+
+    /* ── History list ── */
+    #history-list { padding: 0 10px; }
+
+    .hist-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 11px 12px; border-radius: 12px;
+      background: var(--surface); border: 1px solid var(--border);
+      margin-bottom: 7px;
+      transition: background .15s, border-color .15s;
+      position: relative; overflow: hidden;
+    }
+    .hist-item::before {
+      content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+      background: linear-gradient(to bottom, var(--indigo), var(--violet));
+      border-radius: 2px 0 0 2px; opacity: 0; transition: opacity .15s;
+    }
+    .hist-item.expanded { border-color: rgba(99,102,241,.35); }
+    .hist-item.expanded::before { opacity: 1; }
+
+    .hist-text-wrap { flex: 1; min-width: 0; }
+    .hist-preview {
+      font-size: 13.5px; line-height: 1.4; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .hist-full {
+      display: none; font-size: 13px; line-height: 1.6; color: var(--text);
+      white-space: pre-wrap; word-break: break-word;
+      margin-top: 8px; padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,.06);
+      max-height: 45vh; overflow-y: auto;
+    }
+    .hist-item.expanded .hist-full { display: block; }
+    .hist-meta { font-size: 10.5px; color: var(--muted); margin-top: 3px; }
+
+    .copy-btn {
+      flex-shrink: 0;
+      background: rgba(99,102,241,.12); color: var(--indigo);
+      border: 1px solid rgba(99,102,241,.25); border-radius: 8px;
+      padding: 7px 13px; font-size: 12px; font-weight: 600;
+      font-family: var(--font); cursor: pointer; white-space: nowrap;
+      transition: background .15s, border-color .15s, transform .1s;
+    }
+    .copy-btn:active { transform: scale(.93); }
+    .copy-btn.copied {
+      background: rgba(74,222,128,.12); color: var(--green);
+      border-color: rgba(74,222,128,.3);
+    }
+
+    /* ── Empty / skeleton ── */
+    .empty-state {
+      text-align: center; color: var(--muted); font-size: 13px;
+      padding: 40px 20px; line-height: 1.6;
+    }
+    .empty-icon { font-size: 36px; display: block; margin-bottom: 10px; opacity: .4; }
+
+    @keyframes shimmer {
+      0%   { background-position: -400px 0; }
+      100% { background-position:  400px 0; }
+    }
+    .skel-item {
+      height: 52px; border-radius: 12px; margin-bottom: 7px;
+      background: linear-gradient(90deg, var(--surface) 25%, rgba(99,102,241,.06) 50%, var(--surface) 75%);
+      background-size: 800px 100%; animation: shimmer 1.5s infinite;
+    }
+
+    /* ── Divider ── */
+    .divider { height: 1px; background: rgba(255,255,255,.05); margin: 8px 16px 0; }
+
+    /* ── Send section ── */
+    .send-wrap { padding: 0 10px 10px; }
+    .send-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px; position: relative; overflow: hidden;
+    }
+    .send-card::before {
+      content: ''; position: absolute; inset: 0;
+      background: linear-gradient(135deg, rgba(99,102,241,.04) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .send-area {
+      width: 100%; min-height: 80px;
+      background: var(--card); border: 1px solid rgba(255,255,255,.06);
+      border-radius: 10px; padding: 11px 13px;
+      font-size: 14px; line-height: 1.65; color: var(--text);
+      font-family: var(--font); resize: none; outline: none;
+      overflow-y: auto; max-height: 40vh; transition: border-color .2s;
+    }
+    .send-area::placeholder { color: var(--muted); }
+    .send-area:focus { border-color: rgba(99,102,241,.4); }
+    .send-meta {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-top: 6px; font-size: 11px; color: var(--muted);
+    }
+    .send-meta .warn { color: var(--red); }
+    .btn-send {
+      width: 100%; margin-top: 10px;
+      background: linear-gradient(135deg, #059669, #10b981);
+      color: #fff; border: none; border-radius: 11px; padding: 13px;
+      font-size: 14px; font-weight: 600; font-family: var(--font);
+      cursor: pointer; box-shadow: 0 4px 16px rgba(16,185,129,.25);
+      transition: opacity .15s, transform .1s;
+    }
+    .btn-send:active { transform: scale(.97); opacity: .88; }
+    .btn-send:disabled { opacity: .38; cursor: not-allowed; transform: none !important; }
+
+    /* ── Refresh ── */
+    .refresh-wrap { padding: 6px 10px 20px; display: flex; gap: 8px; }
+    .btn-refresh {
+      flex: 1; background: rgba(255,255,255,.04); color: var(--sub);
+      border: 1px solid rgba(255,255,255,.08); border-radius: 11px; padding: 12px;
+      font-size: 13px; font-weight: 500; font-family: var(--font);
+      cursor: pointer; transition: background .15s;
+    }
+    .btn-refresh:active { background: rgba(255,255,255,.08); }
+    .btn-type {
+      flex: 1; background: linear-gradient(135deg, #d97706, #f59e0b);
+      color: #fff; border: none; border-radius: 11px; padding: 12px;
+      font-size: 13px; font-weight: 600; font-family: var(--font);
+      cursor: pointer; box-shadow: 0 4px 14px rgba(245,158,11,.25);
+      transition: opacity .15s, transform .1s;
+    }
+    .btn-type.typing {
+      background: linear-gradient(135deg, #dc2626, #ef4444);
+      box-shadow: 0 4px 14px rgba(239,68,68,.3);
+    }
+    .btn-type:active { transform: scale(.97); opacity: .88; }
+    .btn-type:disabled { opacity: .38; cursor: not-allowed; transform: none !important; }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      bottom: calc(env(safe-area-inset-bottom, 16px) + 16px);
+      left: 50%; transform: translateX(-50%) translateY(90px);
+      background: rgba(30,41,59,.97); backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px); color: #fff;
+      padding: 11px 22px; border-radius: 30px; font-size: 13px; font-weight: 500;
+      box-shadow: 0 8px 32px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.07);
+      opacity: 0; transition: opacity .2s, transform .25s cubic-bezier(.34,1.56,.64,1);
+      pointer-events: none; white-space: nowrap; z-index: 9999;
+      max-width: calc(100vw - 32px); text-overflow: ellipsis; overflow: hidden;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #toast.ok  { border: 1px solid rgba(74,222,128,.25); }
+    #toast.err { border: 1px solid rgba(248,113,113,.25); }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+<!-- ── Password screen ── -->
+<div id="lock-screen">
+  <div class="lock-logo">📋</div>
+  <div class="lock-title">Mac Clipboard</div>
+  <div class="lock-sub">Enter the app password to connect</div>
+  <input id="pw-input" class="pw-field" type="password" placeholder="Password"
+         autocomplete="off" autocorrect="off" spellcheck="false" />
+  <div class="pw-error" id="pw-error"></div>
+  <button class="btn-connect" id="pw-btn">Connect</button>
+</div>
+
+<!-- ── Main UI ── -->
+<div id="main">
+  <div class="sticky-header">
+    <div class="top-row">
+      <div class="top-left">
+        <div class="logo">📋</div>
+        <span class="app-name">Mac Clipboard</span>
+      </div>
+      <span class="enc-badge">🔒 E2E Encrypted</span>
+      <button class="btn-install" id="install-btn">📲 Install App</button>
+    </div>
+    <div class="status-bar">
+      <span class="status-dot" id="dot"></span>
+      <span id="status-txt">Connecting…</span>
+    </div>
+    <div id="stats-bar"></div>
+  </div>
+
+  <div class="section-label">
+    <span>↓ From Mac</span>
+    <span class="right" id="hist-count"></span>
+  </div>
+
+  <div class="search-wrap">
+    <div class="search-inner">
+      <span class="search-icon">🔍</span>
+      <input id="search-input" class="search-input" type="text"
+             placeholder="Search history…" autocomplete="off" autocorrect="off" spellcheck="false" />
+      <button class="search-clear" id="search-clear">×</button>
+    </div>
+  </div>
+
+  <div id="history-list">
+    <div class="skel-item"></div>
+    <div class="skel-item" style="opacity:.7"></div>
+    <div class="skel-item" style="opacity:.45"></div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="section-label"><span>↑ Send to Mac</span></div>
+  <div class="send-wrap">
+    <div class="send-card">
+      <textarea id="send-area" class="send-area" placeholder="Paste or type text here…" rows="3"></textarea>
+      <div class="send-meta">
+        <span id="send-char-count">0 chars</span>
+        <span id="send-size-warn" class="warn" style="display:none">Max 50 KB</span>
+      </div>
+      <button class="btn-send" id="send-btn">Send to Mac ⌘V</button>
+    </div>
+  </div>
+
+  <div class="refresh-wrap">
+    <button class="btn-refresh" id="refresh-btn">⟳ Refresh</button>
+    <button class="btn-type" id="type-btn">▶ Slow Type</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const POLL_MS   = 2000;
+const MAX_CHARS = 50000;
+
+const $lockScreen = document.getElementById('lock-screen');
+const $pwInput    = document.getElementById('pw-input');
+const $pwBtn      = document.getElementById('pw-btn');
+const $pwError    = document.getElementById('pw-error');
+const $main       = document.getElementById('main');
+const $dot        = document.getElementById('dot');
+const $statusTxt  = document.getElementById('status-txt');
+const $statsBar   = document.getElementById('stats-bar');
+const $installBtn = document.getElementById('install-btn');
+
+// ── PWA install prompt ────────────────────────────────────────────────────────────
+let _installPrompt = null;
+const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const isInStandalone = window.matchMedia('(display-mode: standalone)').matches
+  || navigator.standalone === true;
+
+if (!isInStandalone) {
+  if (isIos) {
+    // iOS Safari: no beforeinstallprompt, show manual instructions
+    $installBtn.textContent = '📲 Add to Home Screen';
+    $installBtn.classList.add('visible');
+    $installBtn.addEventListener('click', () => {
+      toast('Tap the ⬆️ Share button, then “Add to Home Screen”', 'ok', 5000);
+    });
+  } else {
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault();
+      _installPrompt = e;
+      $installBtn.classList.add('visible');
+    });
+    $installBtn.addEventListener('click', async () => {
+      if (!_installPrompt) return;
+      _installPrompt.prompt();
+      const { outcome } = await _installPrompt.userChoice;
+      if (outcome === 'accepted') {
+        $installBtn.classList.remove('visible');
+        _installPrompt = null;
+      }
+    });
+    window.addEventListener('appinstalled', () => {
+      $installBtn.classList.remove('visible');
+      _installPrompt = null;
+    });
+  }
+}
+const $histList   = document.getElementById('history-list');
+const $histCount  = document.getElementById('hist-count');
+const $searchInput = document.getElementById('search-input');
+const $searchClear = document.getElementById('search-clear');
+const $sendArea   = document.getElementById('send-area');
+const $sendCount  = document.getElementById('send-char-count');
+const $sendWarn   = document.getElementById('send-size-warn');
+const $sendBtn    = document.getElementById('send-btn');
+const $refreshBtn = document.getElementById('refresh-btn');
+const $typeBtn    = document.getElementById('type-btn');
+const $toast      = document.getElementById('toast');
+
+// ── Crypto ───────────────────────────────────────────────────────────────────
+let _cryptoKey = null, _password = null;
+
+async function initKey(pw) {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+  _cryptoKey = await crypto.subtle.importKey('raw', hash, { name: 'AES-GCM' }, false, ['decrypt','encrypt']);
+  _password  = pw;
+}
+function b64ToBytes(b64) {
+  const bin = atob(b64), buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf;
+}
+function bytesToB64(buf) { return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+async function decryptPayload(p) {
+  if (!p?.data || !p?.iv) return '';
+  const plain = await crypto.subtle.decrypt({ name:'AES-GCM', iv: b64ToBytes(p.iv) }, _cryptoKey, b64ToBytes(p.data));
+  return new TextDecoder().decode(plain);
+}
+async function encryptText(text) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, _cryptoKey, new TextEncoder().encode(text));
+  return { data: bytesToB64(ct), iv: bytesToB64(iv) };
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+let pollTimer = null, errCount = 0, backoffMs = POLL_MS, toastTimer = null;
+let historyTexts = [];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function toast(msg, type = 'ok', ms = 2200) {
+  clearTimeout(toastTimer);
+  $toast.textContent = msg; $toast.className = 'show ' + type;
+  toastTimer = setTimeout(() => ($toast.className = ''), ms);
+}
+function setStatus(s, txt) { $dot.className = 'status-dot ' + s; $statusTxt.textContent = txt; }
+function timeAgo(ts) {
+  if (!ts) return '';
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  return Math.round(s/60) + 'm ago';
+}
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function humanSize(s) {
+  const b = new TextEncoder().encode(s).byteLength;
+  return b < 1024 ? b + ' B' : (b/1024).toFixed(1) + ' KB';
+}
+
+// ── Render history ────────────────────────────────────────────────────────────
+function renderHistory(texts) {
+  historyTexts = texts;
+  const q = $searchInput.value.trim().toLowerCase();
+  const filtered = q ? texts.filter(t => t.toLowerCase().includes(q)) : texts;
+  $histCount.textContent = filtered.length ? filtered.length + ' item' + (filtered.length > 1 ? 's' : '') + (q && filtered.length < texts.length ? ' (filtered)' : '') : '';
+
+  if (!filtered.length) {
+    $histList.innerHTML = q
+      ? '<div class="empty-state"><span class="empty-icon">🔍</span>No items match "' + escHtml(q) + '"</div>'
+      : '<div class="empty-state"><span class="empty-icon">📋</span>Copy something on your Mac<br>and it will appear here.</div>';
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  filtered.forEach((text, idx) => {
+    const lines = (text.match(/\n/g) || []).length + 1;
+    const size  = humanSize(text);
+    const isExpandable = text.length > 80 || lines > 1;
+    const preview = text.replace(/\s+/g, ' ').trim();
+
+    const item = document.createElement('div');
+    item.className = 'hist-item';
+
+    item.innerHTML =
+      '<div class="hist-text-wrap' + (isExpandable ? ' expandable' : '') + '">' +
+        '<div class="hist-preview">' + escHtml(preview) + '</div>' +
+        '<div class="hist-full">' + escHtml(text) + '</div>' +
+        '<div class="hist-meta">' + escHtml(size) + (lines > 1 ? ' &middot; ' + lines + ' lines' : '') + '</div>' +
+      '</div>' +
+      '<button class="copy-btn" data-idx="' + idx + '">Copy</button>';
+
+    if (isExpandable) {
+      const wrap = item.querySelector('.hist-text-wrap');
+      wrap.style.cursor = 'pointer';
+      wrap.addEventListener('click', () => item.classList.toggle('expanded'));
+    }
+
+    item.querySelector('.copy-btn').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      const t   = historyTexts[parseInt(btn.dataset.idx, 10)];
+      try {
+        await navigator.clipboard.writeText(t);
+        btn.textContent = '✓'; btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 1500);
+        toast('✓ Copied', 'ok', 1500);
+      } catch {
+        const full = item.querySelector('.hist-full');
+        full.style.display = 'block';
+        const range = document.createRange();
+        range.selectNodeContents(full);
+        window.getSelection()?.removeAllRanges();
+        window.getSelection()?.addRange(range);
+        toast('Auto-copy blocked — text selected, long-press to copy', 'err', 4000);
+      }
+    });
+
+    frag.appendChild(item);
+  });
+
+  $histList.innerHTML = '';
+  $histList.appendChild(frag);
+}
+
+// ── Polling ───────────────────────────────────────────────────────────────────
+async function poll() {
+  if (!_password) return;
+  try {
+    const res = await fetch('/api/history', { headers: { 'Authorization': 'Bearer ' + _password } });
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      setStatus('err', 'Disconnected'); stopPolling(); return;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    errCount = 0; backoffMs = POLL_MS;
+    const texts = await Promise.all((data.items || []).map(p => decryptPayload(p)));
+    renderHistory(texts);
+    const devPart = data.connectedCount > 1 ? ` · ${data.connectedCount} browsers` : '';
+    setStatus('ok', 'Connected' + devPart + (data.updatedAt ? ' · ' + timeAgo(data.updatedAt) : ''));
+    if (data.stats) {
+      const s = data.stats;
+      $statsBar.textContent = `Mac: RAM ${s.heapMB} MB heap · ${s.rssMB} MB RSS · CPU ${s.cpuPercent}%`;
+    }
+    setTypingBtn(data.isTyping === true);
+  } catch {
+    errCount++;
+    backoffMs = Math.min(backoffMs * 1.5, 30000);
+    setStatus(errCount >= 4 ? 'err' : 'warn', errCount >= 4 ? 'Disconnected' : 'Reconnecting…');
+  }
+}
+
+function startPolling() {
+  poll();
+  const loop = async () => { if (!pollTimer) return; await poll(); pollTimer = setTimeout(loop, backoffMs); };
+  pollTimer = setTimeout(loop, backoffMs);
+}
+function stopPolling() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } }
+
+// ── Connect ───────────────────────────────────────────────────────────────────
+const PW_KEY     = 'mac2and_pw';
+const PW_EXPIRY  = 'mac2and_pw_exp';
+const PW_TTL_MS  = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function savePassword(pw) {
+  try {
+    localStorage.setItem(PW_KEY, pw);
+    localStorage.setItem(PW_EXPIRY, String(Date.now() + PW_TTL_MS));
+  } catch {}
+}
+function loadPassword() {
+  try {
+    const exp = parseInt(localStorage.getItem(PW_EXPIRY) || '0', 10);
+    if (Date.now() > exp) { clearPassword(); return null; }
+    return localStorage.getItem(PW_KEY);
+  } catch { return null; }
+}
+function clearPassword() {
+  try { localStorage.removeItem(PW_KEY); localStorage.removeItem(PW_EXPIRY); } catch {}
+}
+
+async function tryConnect(pw) {
+  pw = pw ?? $pwInput.value.trim();
+  if (!pw) { $pwInput.focus(); return; }
+  $pwBtn.disabled = true; $pwBtn.textContent = 'Connecting…'; $pwError.textContent = '';
+  try {
+    await initKey(pw);
+    const res = await fetch('/api/latest', { headers: { 'Authorization': 'Bearer ' + pw } });
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      _password = null; _cryptoKey = null;
+      clearPassword();
+      $pwError.textContent = 'Wrong password';
+      $pwInput.value = ''; $pwInput.focus(); return;
+    }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    savePassword(pw);
+    $lockScreen.style.display = 'none'; $main.style.display = 'block';
+    setStatus('ok', 'Connected');
+    startPolling();
+  } catch {
+    $pwError.textContent = 'Disconnected'; _password = null; _cryptoKey = null;
+  } finally {
+    $pwBtn.disabled = false; $pwBtn.textContent = 'Connect';
+  }
+}
+
+$pwBtn.addEventListener('click', () => tryConnect());
+$pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') tryConnect(); });
+
+// Auto-login if password cached and not expired
+const _savedPw = loadPassword();
+if (_savedPw) {
+  tryConnect(_savedPw);
+} else {
+  $pwInput.focus();
+}
+
+// ── Send to Mac ───────────────────────────────────────────────────────────────
+$sendArea.addEventListener('input', () => {
+  $sendArea.style.height = 'auto';
+  $sendArea.style.height = Math.min($sendArea.scrollHeight, window.innerHeight * 0.4) + 'px';
+  const n = $sendArea.value.length;
+  $sendCount.textContent = n.toLocaleString() + ' chars';
+  $sendWarn.style.display = n > MAX_CHARS ? '' : 'none';
+  $sendCount.style.color  = n > MAX_CHARS ? 'var(--red)' : 'var(--muted)';
+});
+
+$sendBtn.addEventListener('click', async () => {
+  const text = $sendArea.value.trim();
+  if (!text) { toast('Nothing to send', 'err'); return; }
+  if (text.length > MAX_CHARS) { toast('⚠ Text too large', 'err'); return; }
+  $sendBtn.disabled = true; $sendBtn.textContent = 'Sending…';
+  try {
+    const payload = await encryptText(text);
+    const res = await fetch('/api/send-to-mac', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _password },
+      body: JSON.stringify({ payload }),
+    });
+    if (res.status === 400) { setStatus('err', 'Disconnected'); stopPolling(); return; }
+    if (res.status === 413) { toast('⚠ Text too large', 'err'); return; }
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    toast('✓ Sent — press ⌘V on Mac', 'ok');
+    $sendArea.value = ''; $sendArea.style.height = ''; $sendCount.textContent = '0 chars';
+  } catch { toast('✗ Send failed', 'err'); }
+  finally { $sendBtn.disabled = false; $sendBtn.textContent = 'Send to Mac ⌘V'; }
+});
+
+// ── Refresh & visibility ──────────────────────────────────────────────────────
+$refreshBtn.addEventListener('click', () => { backoffMs = POLL_MS; setStatus('warn','Refreshing…'); poll(); });
+
+function setTypingBtn(active) {
+  $typeBtn.textContent = active ? '■ Stop Typing' : '▶ Slow Type';
+  $typeBtn.classList.toggle('typing', active);
+}
+
+$typeBtn.addEventListener('click', async () => {
+  const starting = !$typeBtn.classList.contains('typing');
+
+  if (!starting) {
+    // Stop immediately — no delay needed
+    $typeBtn.disabled = true;
+    try {
+      const res = await fetch('/api/type', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + _password, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'stop' }),
+      });
+      const data = await res.json();
+      if (data.ok) setTypingBtn(false);
+    } catch { toast('Failed to reach Mac', 'err'); }
+    finally { $typeBtn.disabled = false; }
+    return;
+  }
+
+  // Countdown: give user 3 s to focus cursor in target field
+  $typeBtn.disabled = true;
+  $typeBtn.classList.add('typing');
+  for (let i = 3; i > 0; i--) {
+    $typeBtn.textContent = `⏳ Starting in ${i}…`;
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  try {
+    const res = await fetch('/api/type', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + _password, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'start' }),
+    });
+    const data = await res.json();
+    if (data.ok) setTypingBtn(data.isTyping);
+    else { setTypingBtn(false); toast('Type error: ' + (data.error || '?'), 'err'); }
+  } catch { setTypingBtn(false); toast('Failed to reach Mac', 'err'); }
+  finally { $typeBtn.disabled = false; }
+});
+
+$searchInput.addEventListener('input', () => {
+  const hasVal = $searchInput.value.length > 0;
+  $searchClear.classList.toggle('visible', hasVal);
+  renderHistory(historyTexts);
+});
+$searchClear.addEventListener('click', () => {
+  $searchInput.value = '';
+  $searchClear.classList.remove('visible');
+  renderHistory(historyTexts);
+  $searchInput.focus();
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    backoffMs = POLL_MS;
+    if (_password && !pollTimer) startPolling();
+    if (_password) poll();
+  } else { stopPolling(); }
+});
+
+// ── PWA Service Worker registration ─────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>
