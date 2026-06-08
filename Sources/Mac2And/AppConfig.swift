@@ -16,8 +16,7 @@ struct AppConfig {
   }
 
   static func load() -> AppConfig {
-    let envFile = ProcessInfo.processInfo.environment["MAC2AND_ENV_FILE"]
-      ?? FileManager.default.currentDirectoryPath.appending("/.env")
+    let envFile = EnvFile.resolvePath()
     let env = EnvFile.load(path: envFile)
     let processEnv = ProcessInfo.processInfo.environment
 
@@ -45,6 +44,50 @@ struct AppConfig {
 }
 
 enum EnvFile {
+  static func resolvePath(
+    explicit: String? = ProcessInfo.processInfo.environment["MAC2AND_ENV_FILE"],
+    currentDirectory: String = FileManager.default.currentDirectoryPath,
+    bundleURL: URL? = Bundle.main.bundleURL,
+    executablePath: String? = CommandLine.arguments.first
+  ) -> String {
+    var candidates: [URL] = []
+
+    if let explicit, !explicit.isEmpty {
+      candidates.append(URL(fileURLWithPath: explicit))
+    }
+
+    candidates.append(URL(fileURLWithPath: currentDirectory).appendingPathComponent(".env"))
+
+    if let bundleURL {
+      candidates.append(contentsOf: envCandidatesNear(url: bundleURL))
+    }
+
+    if let executablePath, !executablePath.isEmpty {
+      let executableURL = URL(fileURLWithPath: executablePath)
+      candidates.append(contentsOf: envCandidatesNear(url: executableURL))
+    }
+
+    for candidate in candidates {
+      if FileManager.default.fileExists(atPath: candidate.path) {
+        return candidate.path
+      }
+    }
+
+    return candidates.first?.path ?? URL(fileURLWithPath: currentDirectory).appendingPathComponent(".env").path
+  }
+
+  private static func envCandidatesNear(url: URL) -> [URL] {
+    var candidates: [URL] = []
+    var cursor = url.hasDirectoryPath ? url : url.deletingLastPathComponent()
+
+    for _ in 0..<8 {
+      candidates.append(cursor.appendingPathComponent(".env"))
+      cursor.deleteLastPathComponent()
+    }
+
+    return candidates
+  }
+
   static func load(path: String?) -> [String: String] {
     guard let path, FileManager.default.fileExists(atPath: path) else {
       return [:]

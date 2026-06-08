@@ -9,6 +9,7 @@ enum SelfTest {
 
       let decrypted = try CryptoBox.decrypt(payload, password: "secret")
       precondition(decrypted == "hello from swift", "crypto round trip failed")
+      try runEnvDiscoveryTest()
 
       do {
         _ = try CryptoBox.decrypt(payload, password: "wrong")
@@ -53,6 +54,27 @@ enum SelfTest {
     }
     let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     precondition(object?["ok"] as? Bool == true, "HTTP smoke response was not ok")
+  }
+
+  private static func runEnvDiscoveryTest() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("mac2and-env-selftest-\(UUID().uuidString)", isDirectory: true)
+    let dist = root.appendingPathComponent("dist", isDirectory: true)
+    let app = dist.appendingPathComponent("Mac2And.app", isDirectory: true)
+
+    try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+    try "NGROK_AUTHTOKEN=test-token\nAPP_PASSWORD=test-password\n"
+      .write(to: root.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let resolved = EnvFile.resolvePath(
+      explicit: nil,
+      currentDirectory: "/",
+      bundleURL: app,
+      executablePath: nil
+    )
+
+    precondition(resolved == root.appendingPathComponent(".env").path, "bundle-relative .env discovery failed")
   }
 
   private static func curl(url: String, bearerToken: String) throws -> (Data, Int) {
