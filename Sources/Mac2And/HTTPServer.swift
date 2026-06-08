@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import Network
 
@@ -6,6 +7,7 @@ final class HTTPServer: @unchecked Sendable {
   private let state: AppState
   private let config: AppConfig
   private let typist: Typist
+  private let throttle = AuthThrottle()
   private let queue = DispatchQueue(label: "mac2and.http")
   private var listener: NWListener?
   private(set) var port: UInt16 = 0
@@ -55,6 +57,11 @@ final class HTTPServer: @unchecked Sendable {
   func stop() {
     listener?.cancel()
     listener = nil
+  }
+
+  /// Clears the failed-auth rate-limit state (used by Purge).
+  func resetThrottle() {
+    throttle.reset()
   }
 
   private func receive(connection: NWConnection) {
@@ -131,21 +138,45 @@ final class HTTPServer: @unchecked Sendable {
     remote: NWEndpoint,
     handler: () -> HTTPResponse
   ) -> HTTPResponse {
-    let expected = config.appPassword ?? config.authToken
-    let provided = request.bearerToken
-    guard provided == expected else {
-      return HTTPResponse.json(status: 400, object: ["ok": false, "error": "Disconnected"])
+    // The API is reachable over the public ngrok URL, so throttle brute force.
+    // The limit is global because over the tunnel we can't trust a per-client
+    // identity (X-Forwarded-For is client-spoofable).
+    if throttle.isLocked() {
+      return HTTPResponse.json(status: 429, object: ["ok": false, "error": "Too many attempts. Try again shortly."])
     }
 
-    state.recordDevice(request.forwardedFor ?? String(describing: remote))
+    guard Self.constantTimeEquals(request.bearerToken, state.currentPassword()) else {
+      throttle.recordFailure()
+      return HTTPResponse.json(status: 400, object: ["ok": false, "error": "Disconnected"])
+    }
+    throttle.recordSuccess()
+
+    let ip = request.forwardedFor ?? String(describing: remote)
+    let deviceID = request.deviceId ?? ip
+    state.recordDevice(id: deviceID, ip: ip, userAgent: request.userAgent ?? "")
+    if state.isBlocked(id: deviceID) {
+      return HTTPResponse.json(status: 403, object: ["ok": false, "blocked": true, "error": "This device is blocked from the Mac."])
+    }
+
     return handler()
+  }
+
+  /// Compares two secrets without leaking length or position of the first
+  /// difference: both are hashed to a fixed 32 bytes, then XOR-accumulated.
+  private static func constantTimeEquals(_ provided: String?, _ expected: String) -> Bool {
+    guard let provided else { return false }
+    let a = Data(SHA256.hash(data: Data(provided.utf8)))
+    let b = Data(SHA256.hash(data: Data(expected.utf8)))
+    var diff: UInt8 = 0
+    for i in 0..<a.count { diff |= a[i] ^ b[i] }
+    return diff == 0
   }
 
   private func latestResponse() -> HTTPResponse {
     let snapshot = state.snapshot()
     let hasMacContent = !snapshot.latestMacClip.isEmpty && snapshot.lastUpdateSource == "mac"
     let payload = hasMacContent
-      ? try? CryptoBox.encrypt(snapshot.latestMacClip, password: config.cryptoPassword)
+      ? try? CryptoBox.encrypt(snapshot.latestMacClip, password: state.currentPassword())
       : nil
 
     return HTTPResponse.json(status: 200, object: [
@@ -158,8 +189,9 @@ final class HTTPServer: @unchecked Sendable {
 
   private func historyResponse() -> HTTPResponse {
     let snapshot = state.snapshot()
+    let password = state.currentPassword()
     let items = snapshot.macClipHistory.compactMap {
-      try? CryptoBox.encrypt($0, password: config.cryptoPassword)
+      try? CryptoBox.encrypt($0, password: password)
     }.map(payloadObject)
 
     return HTTPResponse.json(status: 200, object: [
@@ -168,9 +200,7 @@ final class HTTPServer: @unchecked Sendable {
       "updatedAt": snapshot.latestUpdatedAt as Any? ?? NSNull(),
       "connectedCount": snapshot.connectedCount,
       "stats": [
-        "heapMB": snapshot.lastStats.heapMB,
         "rssMB": snapshot.lastStats.rssMB,
-        "cpuPercent": snapshot.lastStats.cpuPercent,
       ],
       "isTyping": typist.isTyping,
     ])
@@ -192,7 +222,7 @@ final class HTTPServer: @unchecked Sendable {
     let payload = EncryptedPayload(data: data, iv: iv)
     let text: String
     do {
-      text = try CryptoBox.decrypt(payload, password: config.cryptoPassword)
+      text = try CryptoBox.decrypt(payload, password: state.currentPassword())
     } catch {
       return HTTPResponse.json(status: 400, object: ["ok": false, "error": "Decryption failed"])
     }
@@ -223,7 +253,29 @@ final class HTTPServer: @unchecked Sendable {
 
     switch action {
     case "start":
-      typist.start(text: state.snapshot().latestMacClip)
+      guard state.snapshot().remoteTypingEnabled else {
+        return HTTPResponse.json(status: 200, object: [
+          "ok": false,
+          "isTyping": false,
+          "error": "Remote typing is disabled. Enable it from the Mac2And menu bar icon, then try again.",
+        ])
+      }
+      guard typist.ensureAccessibility(prompt: true) else {
+        return HTTPResponse.json(status: 200, object: [
+          "ok": false,
+          "isTyping": false,
+          "error": "Allow Mac2And under System Settings → Privacy & Security → Accessibility on the Mac, then try again.",
+        ])
+      }
+      let clip = state.snapshot().latestMacClip
+      guard !clip.isEmpty else {
+        return HTTPResponse.json(status: 200, object: [
+          "ok": false,
+          "isTyping": false,
+          "error": "Nothing to type — the Mac clipboard is empty.",
+        ])
+      }
+      typist.start(text: clip)
     case "stop":
       typist.stop()
     default:
@@ -292,6 +344,57 @@ private final class StartupState: @unchecked Sendable {
   }
 }
 
+/// Global sliding-window throttle for failed authentication. After
+/// `maxFailures` bad tokens within `window`, all auth is locked out for
+/// `lockout` seconds. Successful auth clears the window.
+private final class AuthThrottle: @unchecked Sendable {
+  private let lock = NSLock()
+  private var failures: [Date] = []
+  private var lockedUntil: Date?
+  private let maxFailures: Int
+  private let window: TimeInterval
+  private let lockout: TimeInterval
+
+  init(maxFailures: Int = 10, window: TimeInterval = 60, lockout: TimeInterval = 60) {
+    self.maxFailures = maxFailures
+    self.window = window
+    self.lockout = lockout
+  }
+
+  func isLocked() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    if let until = lockedUntil {
+      if Date() < until { return true }
+      lockedUntil = nil
+    }
+    return false
+  }
+
+  func recordFailure() {
+    lock.lock()
+    defer { lock.unlock() }
+    let now = Date()
+    failures.append(now)
+    failures.removeAll { now.timeIntervalSince($0) > window }
+    if failures.count >= maxFailures {
+      lockedUntil = now.addingTimeInterval(lockout)
+      failures.removeAll()
+    }
+  }
+
+  func recordSuccess() {
+    reset()
+  }
+
+  func reset() {
+    lock.lock()
+    failures.removeAll()
+    lockedUntil = nil
+    lock.unlock()
+  }
+}
+
 struct HTTPRequest {
   let method: String
   let path: String
@@ -309,6 +412,14 @@ struct HTTPRequest {
     headers["x-forwarded-for"]?.split(separator: ",").first.map {
       $0.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+  }
+
+  var deviceId: String? {
+    headers["x-device-id"].flatMap { $0.isEmpty ? nil : $0 }
+  }
+
+  var userAgent: String? {
+    headers["user-agent"]
   }
 
   var jsonBody: Any? {
@@ -374,8 +485,10 @@ struct HTTPResponse {
     switch status {
     case 200: "OK"
     case 400: "Bad Request"
+    case 403: "Forbidden"
     case 404: "Not Found"
     case 413: "Payload Too Large"
+    case 429: "Too Many Requests"
     case 500: "Internal Server Error"
     default: "OK"
     }

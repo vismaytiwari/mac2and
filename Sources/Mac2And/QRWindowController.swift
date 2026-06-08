@@ -1,11 +1,14 @@
 import AppKit
-import CoreImage
 import Foundation
 
 @MainActor
-final class QRWindowController: NSWindowController {
+final class QRWindowController: NSWindowController, NSWindowDelegate {
   private let imageView = NSImageView()
   private let urlField = NSTextField(labelWithString: "")
+
+  /// Called when the window closes, so the owner can drop its reference and let
+  /// the window, its QR image, and the CoreImage render buffers be reclaimed.
+  var onClose: (() -> Void)?
 
   init() {
     let window = NSWindow(
@@ -17,6 +20,7 @@ final class QRWindowController: NSWindowController {
     window.title = "Mac2And"
     window.center()
     super.init(window: window)
+    window.delegate = self
 
     let root = NSStackView()
     root.orientation = .vertical
@@ -49,7 +53,7 @@ final class QRWindowController: NSWindowController {
 
   func show(url: String) {
     urlField.stringValue = url
-    imageView.image = makeQRImage(url)
+    imageView.image = QRCode.image(for: url)
     showWindow(nil)
     window?.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
@@ -60,16 +64,8 @@ final class QRWindowController: NSWindowController {
     NSPasteboard.general.setString(urlField.stringValue, forType: .string)
   }
 
-  private func makeQRImage(_ text: String) -> NSImage? {
-    let filter = CIFilter(name: "CIQRCodeGenerator")
-    filter?.setValue(Data(text.utf8), forKey: "inputMessage")
-    filter?.setValue("M", forKey: "inputCorrectionLevel")
-    guard let output = filter?.outputImage else { return nil }
-
-    let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
-    let rep = NSCIImageRep(ciImage: scaled)
-    let image = NSImage(size: rep.size)
-    image.addRepresentation(rep)
-    return image
+  func windowWillClose(_ notification: Notification) {
+    imageView.image = nil
+    onClose?()
   }
 }

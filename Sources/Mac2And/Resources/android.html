@@ -460,6 +460,20 @@ const $toast      = document.getElementById('toast');
 // ── Crypto ───────────────────────────────────────────────────────────────────
 let _cryptoKey = null, _password = null;
 
+// Stable per-browser id so the Mac can list and block this device.
+const DEVICE_KEY = 'mac2and_device';
+const _deviceId = (() => {
+  try {
+    let id = localStorage.getItem(DEVICE_KEY);
+    if (!id) {
+      id = (crypto.randomUUID && crypto.randomUUID()) ||
+           ('dev-' + Date.now().toString(16) + Math.random().toString(16).slice(2));
+      localStorage.setItem(DEVICE_KEY, id);
+    }
+    return id;
+  } catch { return 'dev-' + Math.random().toString(16).slice(2); }
+})();
+
 async function initKey(pw) {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
   _cryptoKey = await crypto.subtle.importKey('raw', hash, { name: 'AES-GCM' }, false, ['decrypt','encrypt']);
@@ -577,8 +591,9 @@ function renderHistory(texts) {
 async function poll() {
   if (!_password) return;
   try {
-    const res = await fetch('/api/history', { headers: { 'Authorization': 'Bearer ' + _password } });
-    if (res.status === 400 || res.status === 401 || res.status === 403) {
+    const res = await fetch('/api/history', { headers: { 'Authorization': 'Bearer ' + _password, 'X-Device-Id': _deviceId } });
+    if (res.status === 403) { setStatus('err', 'Blocked by Mac'); stopPolling(); return; }
+    if (res.status === 400 || res.status === 401) {
       setStatus('err', 'Disconnected'); stopPolling(); return;
     }
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -589,8 +604,7 @@ async function poll() {
     const devPart = data.connectedCount > 1 ? ` · ${data.connectedCount} browsers` : '';
     setStatus('ok', 'Connected' + devPart + (data.updatedAt ? ' · ' + timeAgo(data.updatedAt) : ''));
     if (data.stats) {
-      const s = data.stats;
-      $statsBar.textContent = `Mac: RAM ${s.heapMB} MB heap · ${s.rssMB} MB RSS · CPU ${s.cpuPercent}%`;
+      $statsBar.textContent = `Mac: ${data.stats.rssMB} MB RAM`;
     }
     setTypingBtn(data.isTyping === true);
   } catch {
@@ -635,8 +649,13 @@ async function tryConnect(pw) {
   $pwBtn.disabled = true; $pwBtn.textContent = 'Connecting…'; $pwError.textContent = '';
   try {
     await initKey(pw);
-    const res = await fetch('/api/latest', { headers: { 'Authorization': 'Bearer ' + pw } });
-    if (res.status === 400 || res.status === 401 || res.status === 403) {
+    const res = await fetch('/api/latest', { headers: { 'Authorization': 'Bearer ' + pw, 'X-Device-Id': _deviceId } });
+    if (res.status === 403) {
+      _password = null; _cryptoKey = null;
+      $pwError.textContent = 'This device is blocked by the Mac';
+      return;
+    }
+    if (res.status === 400 || res.status === 401) {
       _password = null; _cryptoKey = null;
       clearPassword();
       $pwError.textContent = 'Wrong password';
@@ -684,7 +703,7 @@ $sendBtn.addEventListener('click', async () => {
     const payload = await encryptText(text);
     const res = await fetch('/api/send-to-mac', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _password },
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + _password, 'X-Device-Id': _deviceId },
       body: JSON.stringify({ payload }),
     });
     if (res.status === 400) { setStatus('err', 'Disconnected'); stopPolling(); return; }
@@ -713,7 +732,7 @@ $typeBtn.addEventListener('click', async () => {
     try {
       const res = await fetch('/api/type', {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + _password, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': 'Bearer ' + _password, 'Content-Type': 'application/json', 'X-Device-Id': _deviceId },
         body: JSON.stringify({ action: 'stop' }),
       });
       const data = await res.json();
@@ -734,7 +753,7 @@ $typeBtn.addEventListener('click', async () => {
   try {
     const res = await fetch('/api/type', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + _password, 'Content-Type': 'application/json' },
+      headers: { 'Authorization': 'Bearer ' + _password, 'Content-Type': 'application/json', 'X-Device-Id': _deviceId },
       body: JSON.stringify({ action: 'start' }),
     });
     const data = await res.json();

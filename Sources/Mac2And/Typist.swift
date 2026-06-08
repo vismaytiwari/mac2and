@@ -1,13 +1,30 @@
+import ApplicationServices
+import CoreGraphics
 import Foundation
 
+/// Types text into the frontmost app by posting native key events.
+///
+/// We post `CGEvent` keystrokes directly instead of driving System Events via
+/// osascript. That needs only one permission — Accessibility — attributed to
+/// this app, and lets us pace each keystroke in Swift.
 final class Typist: @unchecked Sendable {
   private let lock = NSLock()
   private let queue = DispatchQueue(label: "mac2and.typist")
   private var running = false
-  private var process: Process?
-  private let chunkSize = 300
-  private let scriptURL = URL(fileURLWithPath: NSTemporaryDirectory())
-    .appendingPathComponent("mac2and_type.applescript")
+  // Bumped on every start() and stop(). A run only clears `running` if its
+  // token is still current, so a superseded run can't cancel a newer one.
+  private var generation = 0
+
+  // Timing model.
+  //
+  // A brisk developer peaks around ~150 WPM in bursts, i.e. ~0.08 s between
+  // keys. We treat that as the SPEED CAP: no keystroke is ever faster than
+  // `minDelay`, so the typing never looks inhumanly instant. Most characters
+  // land in a fast-but-human band; spaces and sentence punctuation get a
+  // slightly longer (also randomized) pause, the way a real typist drifts.
+  private let minDelay = 0.08                                 // hard floor = fastest allowed
+  private let letterDelay: ClosedRange<Double> = 0.08...0.17  // ~85–150 WPM
+  private let pauseDelay: ClosedRange<Double> = 0.17...0.32   // after space / . , ; : ! ?
 
   var isTyping: Bool {
     lock.lock()
@@ -15,33 +32,44 @@ final class Typist: @unchecked Sendable {
     return running
   }
 
+  /// Whether this app may post synthetic keystrokes right now.
+  var hasAccessibility: Bool { AXIsProcessTrusted() }
+
+  /// Returns the current Accessibility trust state. When `prompt` is true and
+  /// the app is not yet trusted, macOS adds it to the Accessibility list and
+  /// shows the system prompt so the user can grant access.
+  @discardableResult
+  func ensureAccessibility(prompt: Bool) -> Bool {
+    if AXIsProcessTrusted() { return true }
+    guard prompt else { return false }
+    // The literal value of kAXTrustedCheckOptionPrompt; using the string
+    // avoids the Unmanaged<CFString> import differences between SDKs.
+    let promptKey = "AXTrustedCheckOptionPrompt" as CFString
+    let options = [promptKey: true] as CFDictionary
+    return AXIsProcessTrustedWithOptions(options)
+  }
+
   func start(text: String) {
     stop()
     guard !text.isEmpty else { return }
 
     lock.lock()
+    generation &+= 1
+    let token = generation
     running = true
     lock.unlock()
 
     let chars = Array(text)
     queue.async { [weak self] in
       guard let self else { return }
-      var offset = 0
-      while self.isTyping && offset < chars.count {
-        let end = min(offset + self.chunkSize, chars.count)
-        let chunk = Array(chars[offset..<end])
-        do {
-          try self.runChunk(chunk)
-        } catch {
-          NSLog("[typist] osascript failed: \(error)")
-          break
-        }
-        offset = end
+      let source = CGEventSource(stateID: .hidSystemState)
+      for ch in chars {
+        if !self.isActive(token) { break }
+        self.postCharacter(ch, source: source)
+        self.sleepCancellably(self.humanDelay(ch), token: token)
       }
-
       self.lock.lock()
-      self.running = false
-      self.process = nil
+      if self.generation == token { self.running = false }
       self.lock.unlock()
     }
   }
@@ -49,58 +77,58 @@ final class Typist: @unchecked Sendable {
   func stop() {
     lock.lock()
     running = false
-    let current = process
-    process = nil
+    generation &+= 1
     lock.unlock()
-    current?.terminate()
   }
 
-  private func runChunk(_ chars: [Character]) throws {
-    let script = buildScript(chars)
-    try script.write(to: scriptURL, atomically: true, encoding: .utf8)
-
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    process.arguments = [scriptURL.path]
-
+  /// True only while `token` is the live run (not stopped, not superseded).
+  private func isActive(_ token: Int) -> Bool {
     lock.lock()
-    if !running {
-      lock.unlock()
-      return
-    }
-    self.process = process
-    lock.unlock()
-
-    try process.run()
-    process.waitUntilExit()
+    defer { lock.unlock() }
+    return running && generation == token
   }
 
-  private func buildScript(_ chars: [Character]) -> String {
-    var lines = ["tell application \"System Events\""]
-    for ch in chars {
-      lines.append("  \(charToScript(ch))")
-      lines.append("  delay \(String(format: "%.3f", humanDelay(ch)))")
+  /// Sleeps for `seconds`, waking early in small slices if the run is stopped
+  /// so an in-flight type can be cancelled promptly.
+  private func sleepCancellably(_ seconds: Double, token: Int) {
+    var remaining = seconds
+    while remaining > 0 && isActive(token) {
+      let slice = min(remaining, 0.05)
+      Thread.sleep(forTimeInterval: slice)
+      remaining -= slice
     }
-    lines.append("end tell")
-    return lines.joined(separator: "\n")
   }
 
-  private func charToScript(_ ch: Character) -> String {
-    let scalar = ch.unicodeScalars.first?.value ?? 0
-    if ch == "\n" || ch == "\r" { return "key code 36" }
-    if ch == "\t" { return "key code 48" }
-    if scalar == 34 || scalar < 32 || scalar > 126 {
-      return "keystroke (character id \(scalar))"
-    }
-    return "keystroke \"\(ch)\""
+  private func postCharacter(_ ch: Character, source: CGEventSource?) {
+    // Send Return and Tab as real key codes so they act as Enter / Tab.
+    if ch == "\n" || ch == "\r" { postKeyCode(36, source: source); return }
+    if ch == "\t" { postKeyCode(48, source: source); return }
+
+    // Inject the literal character (covering uppercase, symbols, emoji, and
+    // composed graphemes) without simulating modifier keys or guessing layout.
+    var utf16 = Array(String(ch).utf16)
+    guard
+      let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+      let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+    else { return }
+    down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+    up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+    down.post(tap: .cghidEventTap)
+    up.post(tap: .cghidEventTap)
+  }
+
+  private func postKeyCode(_ key: CGKeyCode, source: CGEventSource?) {
+    CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)?.post(tap: .cghidEventTap)
+    CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)?.post(tap: .cghidEventTap)
   }
 
   private func humanDelay(_ ch: Character) -> Double {
-    let punctuation = CharacterSet.whitespacesAndNewlines
+    let pausers = CharacterSet.whitespacesAndNewlines
       .union(CharacterSet(charactersIn: ".,;:!?"))
     let scalar = ch.unicodeScalars.first ?? " "
-    let base = punctuation.contains(scalar) ? 0.22 : 0.15
-    let jitter = Double.random(in: -0.05...0.05)
-    return max(0.08, base + jitter)
+    let delay = pausers.contains(scalar)
+      ? Double.random(in: pauseDelay)
+      : Double.random(in: letterDelay)
+    return max(minDelay, delay)
   }
 }

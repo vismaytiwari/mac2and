@@ -20,7 +20,6 @@ let package = Package(
         .linkedFramework("AppKit"),
         .linkedFramework("CryptoKit"),
         .linkedFramework("Network"),
-        .linkedFramework("CoreImage"),
       ]
     ),
   ]
